@@ -4,7 +4,7 @@ from abc import abstractmethod
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import weaviate
-
+from uuid import uuid4
 from superagi.vector_store.base import VectorStore
 from superagi.vector_store.document import Document
 
@@ -53,34 +53,40 @@ class Weaviate(VectorStore):
     def add_texts(
         self, texts: Iterable[str], metadatas: List[dict] | None = None, **kwargs: Any
     ) -> List[str]:
-        result = []
-        with self.client.batch as batch:
-            for i, text in enumerate(texts):
-                metadata = metadatas[i] if metadatas else {}
-                data_object = metadata.copy()
-                data_object[self.text_field] = text
-                vector = self.embedding_model.get_embedding(text)
-
-                batch.add_data_object(data_object, class_name=self.index, vector=vector)
-
-                object = batch.create_objects()[0]
-                result.append(object["id"])
-        return result
+        result = {}
+        collected_ids = []
+        for i, text in enumerate(texts):
+            metadata = metadatas[i] if metadatas else {}
+            data_object = metadata.copy()
+            data_object[self.text_field] = text
+            vector = self.embedding_model.get_embedding(text)
+            id = str(uuid4())
+            result = {"ids": id, "data_object": data_object, "vectors": vector}
+            collected_ids.append(id)
+            try:
+                self.add_embeddings_to_vector_db(result)
+            except:
+                raise Exception("Error adding embeddings to vector db")
+        return collected_ids
 
     def get_matching_text(
-        self, query: str, top_k: int = 5, **kwargs: Any
+        self, query: str, top_k: int = 5, metadata: dict = None, **kwargs: Any
     ) -> List[Document]:
-        alpha = kwargs.get("alpha", 0.5)
-        metadata_fields = self._get_metadata_fields()
         query_vector = self.embedding_model.get_embedding(query)
+        if metadata is not None:
+            for key, value in metadata.items():
+                filters = {
+                    "path": [key],
+                    "operator": "Equal",
+                    
+                }
 
-        results = (
-            self.client.query.get(self.index, metadata_fields + [self.text_field])
-            .with_hybrid(query, vector=query_vector, alpha=alpha)
-            .with_limit(top_k)
-            .do()
-        )
-
+        results = self.client.query.get(
+            self.index,
+            [self.text_field],
+        ).with_near_vector(
+            {"vector": query_vector, "certainty": 0.7}
+        ).with_where(filters).with_limit(top_k).do()
         results_data = results["data"]["Get"][self.index]
         documents = []
         for result in results_data:
@@ -92,15 +98,6 @@ class Weaviate(VectorStore):
             documents.append(document)
 
         return documents
-
-    def _get_metadata_fields(self) -> List[str]:
-        schema = self.client.schema.get(self.index)
-        property_names = []
-        for property_schema in schema["properties"]:
-            property_names.append(property_schema["name"])
-
-        property_names.remove(self.text_field)
-        return property_names
 
     def get_index_stats(self) -> dict:
         result = self.client.query.aggregate(self.index).with_meta_count().do()
