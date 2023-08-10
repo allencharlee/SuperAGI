@@ -45,7 +45,7 @@ def create_weaviate_client(
 
 class Weaviate(VectorStore):
     def __init__(
-        self, client: weaviate.Client, embedding_model: Any, index: str, text_field: str
+        self, client: weaviate.Client, embedding_model: Any, index: str, text_field: str = "text"
     ):
         self.index = index
         self.embedding_model = embedding_model
@@ -106,10 +106,25 @@ class Weaviate(VectorStore):
         return property_names
 
     def get_index_stats(self) -> dict:
-        pass
+        result = self.client.query.aggregate(self.index).with_meta_count().do()
+        vector_count = result['data']['Aggregate'][self.index][0]['meta']['count']
+        return {'vector_count': vector_count}
 
     def add_embeddings_to_vector_db(self, embeddings: dict) -> None:
-        pass
-
+        try:
+            with self.client.batch as batch:
+                for i in range(len(embeddings['ids'])):
+                    data_object = {key: value for key, value in embeddings['data_object'][i].items()}
+                    batch.add_data_object(data_object, class_name=self.index, uuid=embeddings['ids'][i], vector=embeddings['vectors'][i])
+        except Exception as err:
+            raise err
+        
     def delete_embeddings_from_vector_db(self, ids: List[str]) -> None:
-        pass
+        try:
+            for id in ids:
+                self.client.data_object.delete(
+                    uuid = id,
+                    class_name = self.index
+                )
+        except Exception as err:
+            raise err
